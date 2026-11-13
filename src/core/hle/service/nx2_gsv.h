@@ -2086,7 +2086,7 @@ private:
         // An adaptive or previous-frame wait can return because this frame needs more CPU work.
         // Do not make that path wait on its unfinished frame through a release fence instead.
         // Timestamp requests retain their existing post-pacing recording point.
-        const bool queued = frames_ahead == 0 && (w[18] & 0xf) == 0 &&
+        const bool queued = system.IsMulticore() && frames_ahead == 0 && (w[18] & 0xf) == 0 &&
                             (~w[22] >= 192 || system.Host1x().GetSyncpointManager().IsReadyGuest(
                                                  ~w[22], w[24]));
         std::array<u32, 4> release{};
@@ -2206,8 +2206,9 @@ private:
         const auto interval = PresentInterval(timing, process);
         const auto now = std::chrono::steady_clock::now();
         std::chrono::nanoseconds wait{};
+        Nx2PresentPacer pacer{m_present_pacer};
         if (interval) {
-            const auto pacing = m_present_pacer.Advance(now, *interval);
+            const auto pacing = pacer.Advance(now, *interval);
             wait = (std::max)(std::chrono::nanoseconds{0},
                              std::chrono::duration_cast<std::chrono::nanoseconds>(pacing.deadline - now));
             if (Common::DkbFrameTrace::Enabled()) {
@@ -2220,6 +2221,7 @@ private:
             LOG_ERROR(Service, "nx2:vi2 release queue exhausted at present {}", m_presents);
             return std::nullopt;
         }
+        m_present_pacer = pacer;
         return std::array<u32, 4>{~m_release_syncpoint, 0, *value, 0};
     }
 
