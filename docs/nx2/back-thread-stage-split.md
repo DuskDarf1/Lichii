@@ -82,20 +82,39 @@ for the buffer entries), both `Configure` paths, the delta draw path and uniform
 rasterizer entry point (108 buffer cache call sites, 65 methods, 34 lock sites in
 `vk_rasterizer.cpp` alone, which is why the settle belongs in the lock).
 
-## What it would give
+## What it would give: measured
 
-The helper can take the cache logic, not the recording, which stays in stream order on the back:
-about 20% of the back thread, less 5% to 6% for capturing the job and replaying its results.
-The expected gain is 12% to 15% of the frame in scenes bound by the back thread (an upper bound
-of 24% if recording moved too), and nothing where the back thread is not the limit.
+A second probe ran the design synchronously and timed it. After each delta draw the helper would
+take (buffer binding, descriptor write, draw record), it measured how long the back could go on
+before it had to wait for the helper, and why it would wait.
 
-A fork and join inside one draw (no outstanding draw at all) was estimated from the profile zones
-at about 8%: in a delta draw there is little for the back to do while the helper binds.
+Bananza's draws reach the back as a thunk the front sends after the draw macro
+(`Maxwell3D::FinishFrontMacro`: the queued register writes, then the draw). Between two draws
+there is about 0.17 us of other work, so the window runs into the next draw's own preparation
+and ends where that draw locks the buffer and texture caches, or earlier.
+
+| Per draw | Characters in view | Turned away |
+|---|---|---|
+| Draws a second | 260,000 | 120,000 |
+| Helper's part | 1.10 us | 1.29 us |
+| Window before the back must wait | 0.33 us | 0.40 us |
+| Overlap: min(window, helper's part) | 0.30 us (78 ms/s, ~8% of the back) | 0.38 us (45 ms/s, ~5%) |
+
+What ends the windows (characters in view): a constant buffer bind (`bind_groups`, 46%), the next
+draw reaching the cache lock (32%, 0.50 us on average), constant buffer data into a range the
+outstanding draw bound (13%), and other thunks from the front (9%). Snapshotting the uniform
+bindings would remove the bind waits and lengthen the windows to about the 0.5 us the cache lock
+allows. Copying the snapshot and handing the draw to another core cost part of that, so this
+version would give about 3% to 5%.
+
+The rest of a draw's back time (about 2.7 of 3.8 us) is preparation inside the cache lock:
+uniform reuse checks, storage binds, render targets, dynamic state. Overlapping it with the
+helper (up to 1.4x on the back) needs the buffer cache, the texture cache and command recording
+to be safe for two threads at once. Not done.
 
 ## Why it is not in this change
 
-Each step before the last gives no speed-up, and the last one changes how every Switch 2 title
-binds its buffers and updates its descriptors. On the PC used here only Bananza reaches gameplay
-(Ocarina of Time loses the Vulkan device while it loads a save, with or without changes), so the
-change could not be checked against a second title. It needs a verify mode like
-`EDEN_NX2_FAST_DRAW_VERIFY` (run the job on the back too and compare) before it is turned on.
+The version above would add a thread and per-draw snapshots for every Switch 2 title for about
+3% to 5%. The version that pays would rework the caches' threading. Neither was built. The probe
+that measured the windows is not kept; it hooked `GpuSplit::Execute`, `FinishFrontMacro`, the
+constant buffer and inline writes, and the cache lock in `PrepareDraw`.
