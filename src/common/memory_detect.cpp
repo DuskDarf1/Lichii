@@ -219,14 +219,16 @@ u64 GetProcessPageFaults() {
 #endif
 }
 
-std::optional<u64> GetSystemCommitRoom() {
+std::optional<u64> GetProcessCommitRoom() {
 #ifdef _WIN32
-    PERFORMANCE_INFORMATION performance{};
-    performance.cb = sizeof(performance);
-    if (GetPerformanceInfo(&performance, sizeof(performance))) {
-        const u64 limit = performance.CommitLimit;
-        const u64 committed = performance.CommitTotal;
-        return (committed < limit ? limit - committed : 0) * performance.PageSize;
+    // Not GetPerformanceInfo: it also counts every process's handles and threads, ~3 ms a call
+    // (i7-10700F, 200 processes) on the GPU thread checking the texture cache's thresholds.
+    // ullAvailPageFile is the smaller of the system's commit room and this process's under a job
+    // object's commit limit.
+    MEMORYSTATUSEX status{};
+    status.dwLength = sizeof(status);
+    if (GlobalMemoryStatusEx(&status)) {
+        return status.ullAvailPageFile;
     }
 #endif
     return std::nullopt;

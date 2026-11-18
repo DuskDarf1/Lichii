@@ -50,13 +50,29 @@ TEST_CASE("The host memory bound does not wrap", "[video_core][texture_cache][ho
     REQUIRE(VideoCommon::HostCriticalMemory(max, max) == max - VideoCommon::HostCommitReserve);
 }
 
-TEST_CASE("The system's commit room is reported where there is a commit limit",
+TEST_CASE("A job object's commit limit bounds the texture cache below the system's room",
           "[video_core][texture_cache][host_memory_limit]") {
-    const std::optional<u64> room = Common::GetSystemCommitRoom();
+    // 6 GiB of device memory with 20 GiB of system commit left, in a job that may commit 4 GiB
+    // more: the job's room is the one an allocation fails past.
+    const u64 system = VideoCommon::HostCriticalMemory(6 * GiB, 20 * GiB);
+    const u64 job = VideoCommon::HostCriticalMemory(6 * GiB, 4 * GiB);
+    REQUIRE(job == 8 * GiB);
+    REQUIRE(job < system);
+}
+
+TEST_CASE("The process's commit room is reported where there is a commit limit",
+          "[video_core][texture_cache][host_memory_limit]") {
+    const std::optional<u64> room = Common::GetProcessCommitRoom();
 #ifdef _WIN32
     REQUIRE(room.has_value());
     const Common::ProcessMemoryUsage usage = Common::GetProcessMemoryUsage();
     REQUIRE(*room <= usage.system_commit_limit);
+    // Never more than the system's own room (with slack for commit that changed between the two
+    // reads), so the thresholds are never above what the system-wide room gave.
+    const u64 system_room = usage.system_commit_limit - usage.system_commit + 256 * MiB;
+    REQUIRE(*room <= system_room);
+    REQUIRE(VideoCommon::HostCriticalMemory(usage.commit, *room) <=
+            VideoCommon::HostCriticalMemory(usage.commit, system_room));
 #else
     REQUIRE_FALSE(room.has_value());
 #endif
